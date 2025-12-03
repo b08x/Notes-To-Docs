@@ -5,7 +5,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { ArrowDownTrayIcon, PlusIcon, ViewColumnsIcon, DocumentIcon, CodeBracketIcon, XMarkIcon, SparklesIcon, PaperAirplaneIcon, ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
 import { Creation } from './CreationHistory';
-import { updateApp } from '../services/gemini';
+import { updateApp } from '../lib/gemini';
 
 interface LivePreviewProps {
   creation: Creation | null;
