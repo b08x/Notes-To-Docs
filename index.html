@@ -5,37 +5,45 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Notes to Docs</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- PDF.js for rendering PDF previews -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" async></script>
     <script>
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      window.onload = function() {
+        if(window.pdfjsLib) {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        }
+      };
     </script>
-    <style>
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-      @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
-    </style>
-  <script type="importmap">
+    <script type="importmap">
 {
   "imports": {
-    "react": "https://aistudiocdn.com/react@^19.2.0",
-    "react-dom/client": "https://aistudiocdn.com/react-dom@^19.2.0/client",
-    "react-dom": "https://aistudiocdn.com/react-dom@^19.2.0",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.28.0",
-    "@heroicons/react/24/outline": "https://aistudiocdn.com/@heroicons/react@^2.2.0/24/outline",
-    "@heroicons/react/24/solid": "https://aistudiocdn.com/@heroicons/react@^2.2.0/24/solid",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "class-variance-authority": "https://aistudiocdn.com/class-variance-authority@^0.7.1",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.31.0",
+    "react/": "https://aistudiocdn.com/react@^19.2.1/",
+    "react": "https://aistudiocdn.com/react@^19.2.1",
+    "react-dom": "https://aistudiocdn.com/react-dom@^19.2.1",
     "@heroicons/react/": "https://aistudiocdn.com/@heroicons/react@^2.2.0/",
-    "clsx": "https://aistudiocdn.com/clsx@^2.1.0",
-    "tailwind-merge": "https://aistudiocdn.com/tailwind-merge@^2.2.1",
-    "class-variance-authority": "https://aistudiocdn.com/class-variance-authority@^0.7.1"
+    "tailwind-merge": "https://aistudiocdn.com/tailwind-merge@^3.4.0",
+    "next": "https://aistudiocdn.com/next@^16.0.7",
+    "clsx": "https://aistudiocdn.com/clsx@^2.1.1",
+    "@prisma/client": "https://aistudiocdn.com/@prisma/client@^7.1.0",
+    "zod": "https://aistudiocdn.com/zod@^4.1.13",
+    "fs/": "https://aistudiocdn.com/fs@^0.0.1-security/",
+    "path": "https://aistudiocdn.com/path@^0.12.7",
+    "os": "https://aistudiocdn.com/os@^0.1.2",
+    "buffer": "https://aistudiocdn.com/buffer@^6.0.3",
+    "react-resizable-panels": "https://esm.sh/react-resizable-panels@2.0.19?external=react,react-dom",
+    "docx": "https://esm.sh/docx@8.5.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.1/",
+    "ai": "https://esm.sh/ai@3.2.20",
+    "@ai-sdk/google": "https://esm.sh/@ai-sdk/google@0.0.26",
+    "@ai-sdk/openai": "https://esm.sh/@ai-sdk/openai@0.0.36",
+    "@ai-sdk/anthropic": "https://esm.sh/@ai-sdk/anthropic@0.0.26"
   }
 }
 </script>
-</head>
-  <body>
+  </head>
+  <body class="min-h-screen bg-zinc-950 bg-dot-grid font-sans antialiased text-zinc-50 selection:bg-blue-500/30">
     <div id="root"></div>
-  <script type="module" src="/index.tsx"></script>
-</body>
+    <script type="module" src="/index.tsx"></script>
+  </body>
 </html>

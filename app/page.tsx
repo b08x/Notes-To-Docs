@@ -2,46 +2,51 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
+'use client';
+
 import React, { useState, useEffect, useRef } from 'react';
-import { Hero } from '../components/Hero';
-import { InputArea } from '../components/InputArea';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { ChatInterface, Message } from '../components/ChatInterface';
 import { LivePreview } from '../components/LivePreview';
-import { CreationHistory, Creation } from '../components/CreationHistory';
-import { bringToLife } from '../lib/gemini';
+import { Creation } from '../components/CreationHistory';
+import { SettingsModal } from '../components/SettingsModal';
+import { UserSettings, DEFAULT_SETTINGS } from '../lib/types/settings';
+import { generateKB, updateApp } from '../lib/gemini';
 import { db } from '../db/storage';
-import { ArrowUpTrayIcon } from '@heroicons/react/24/solid';
 
 export default function Page() {
-  const [activeCreation, setActiveCreation] = useState<Creation | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [artifacts, setArtifacts] = useState<Record<string, Creation>>({});
+  const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [history, setHistory] = useState<Creation[]>([]);
-  const importInputRef = useRef<HTMLInputElement>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
+  
+  const workerRef = useRef<Worker | null>(null);
 
-  // Load history from DB on mount
+  // Initialize Worker and Load Settings
   useEffect(() => {
-    const initHistory = async () => {
-      let loadedHistory = db.getHistory();
-
-      if (loadedHistory.length > 0) {
-        setHistory(loadedHistory);
-      } else {
-        // If no history (new user or cleared), load examples
-        const examples = await db.loadExamples();
-        if (examples.length > 0) {
-           setHistory(examples);
+    workerRef.current = new Worker('/pdf.worker.js');
+    
+    // Load Settings
+    const savedSettings = localStorage.getItem('app_settings');
+    if (savedSettings) {
+        try {
+            setSettings(JSON.parse(savedSettings));
+        } catch (e) {
+            console.error("Failed to parse settings");
         }
-      }
-    };
+    }
 
-    initHistory();
+    return () => {
+      workerRef.current?.terminate();
+    };
   }, []);
 
-  // Save history when it changes
-  useEffect(() => {
-    if (history.length > 0) {
-        db.saveHistory(history);
-    }
-  }, [history]);
+  const handleSaveSettings = (newSettings: UserSettings) => {
+      setSettings(newSettings);
+      localStorage.setItem('app_settings', JSON.stringify(newSettings));
+  };
 
   // Helper to convert file to base64
   const fileToBase64 = (file: File): Promise<string> => {
@@ -50,6 +55,13 @@ export default function Page() {
       reader.readAsDataURL(file);
       reader.onload = () => {
         if (typeof reader.result === 'string') {
+          // Remove Data URI prefix for sending to API (if needed, but Vercel AI SDK likes data uris usually, 
+          // let's strip it to be safe for our custom handling in server action if we used to, 
+          // BUT wait, Vercel AI SDK 'image' part usually expects base64 or url. 
+          // Our refactored generateKB expects base64 string without prefix? 
+          // Let's check lib/gemini.ts... "content.push({ type: 'image', image: file.base64 })". 
+          // Vercel SDK documentation says `image` property can be base64 string or URL. 
+          // Often it handles Data URIs too. Let's keep stripping to match previous logic logic just in case).
           const base64 = reader.result.split(',')[1];
           resolve(base64);
         } else {
@@ -60,177 +72,176 @@ export default function Page() {
     });
   };
 
-  const handleGenerate = async (promptText: string, file?: File) => {
+  const extractPdfText = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      if (!workerRef.current) {
+        resolve(""); 
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const data = e.target?.result;
+        workerRef.current!.onmessage = (msg) => {
+            if (msg.data.type === 'SUCCESS') {
+                const fullText = msg.data.payload.map((p: any) => `[Page ${p.page}] ${p.text}`).join('\n\n');
+                resolve(fullText);
+            } else {
+                console.error("PDF Worker Error:", msg.data.error);
+                resolve(""); 
+            }
+        };
+        workerRef.current!.postMessage({ data }, [data as ArrayBuffer]);
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  };
+
+  const handleSendMessage = async (text: string, files: File[]) => {
+    const messageId = crypto.randomUUID();
+    
+    // 1. Add User Message
+    const userMsg: Message = {
+        id: messageId,
+        role: 'user',
+        content: text,
+        timestamp: new Date(),
+        attachments: files.map(f => ({ name: f.name, type: f.type }))
+    };
+    setMessages(prev => [...prev, userMsg]);
     setIsGenerating(true);
-    // Clear active creation to show loading state
-    setActiveCreation(null);
 
     try {
-      let imageBase64: string | undefined;
-      let mimeType: string | undefined;
+        // 2. Prepare Payload
+        const filesPayload = [];
+        let extractedText = "";
 
-      if (file) {
-        imageBase64 = await fileToBase64(file);
-        mimeType = file.type.toLowerCase();
-      }
+        for (const file of files) {
+            const base64 = await fileToBase64(file);
+            filesPayload.push({
+                name: file.name,
+                type: file.type,
+                base64: base64
+            });
 
-      const html = await bringToLife(promptText, imageBase64, mimeType);
-      
-      if (html) {
-        const newCreation: Creation = {
-          id: crypto.randomUUID(),
-          name: file ? file.name : 'New Creation',
-          html: html,
-          originalImage: imageBase64 && mimeType ? `data:${mimeType};base64,${imageBase64}` : undefined,
-          timestamp: new Date(),
-        };
-        setActiveCreation(newCreation);
-        setHistory(prev => [newCreation, ...prev]);
-      }
+            if (file.type === 'application/pdf') {
+                extractedText += await extractPdfText(file);
+            }
+        }
+
+        // 3. Logic Branch: Update vs New
+        let html = "";
+        
+        // If we have an active artifact and no new files, treat as refinement
+        if (activeArtifactId && files.length === 0) {
+            const currentArtifact = artifacts[activeArtifactId];
+            if (currentArtifact) {
+                // Pass settings to updateApp
+                html = await updateApp(currentArtifact.html, text, settings);
+                
+                // Update existing artifact
+                setArtifacts(prev => ({
+                    ...prev,
+                    [activeArtifactId]: { ...prev[activeArtifactId], html: html }
+                }));
+                
+                // Add Assistant Response
+                const assistantMsg: Message = {
+                    id: crypto.randomUUID(),
+                    role: 'assistant',
+                    content: "I've updated the article based on your feedback.",
+                    timestamp: new Date(),
+                    artifactId: activeArtifactId
+                };
+                setMessages(prev => [...prev, assistantMsg]);
+                setIsGenerating(false);
+                return;
+            }
+        }
+
+        // Default: Generate New
+        // Pass settings to generateKB
+        html = await generateKB(text, filesPayload, extractedText, settings);
+
+        if (html) {
+            const artifactId = crypto.randomUUID();
+            const newArtifact: Creation = {
+                id: artifactId,
+                name: files[0]?.name || 'Generated Article',
+                html: html,
+                originalImage: filesPayload[0] ? `data:${filesPayload[0].type};base64,${filesPayload[0].base64}` : undefined,
+                timestamp: new Date()
+            };
+
+            setArtifacts(prev => ({ ...prev, [artifactId]: newArtifact }));
+            setActiveArtifactId(artifactId);
+
+            const assistantMsg: Message = {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: "Here is the knowledge base article I generated for you.",
+                timestamp: new Date(),
+                artifactId: artifactId
+            };
+            setMessages(prev => [...prev, assistantMsg]);
+        }
 
     } catch (error) {
-      console.error("Failed to generate:", error);
-      alert("Something went wrong while bringing your file to life. Please try again.");
+        console.error("Generation Error:", error);
+        const errorMsg: Message = {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Error: ${error instanceof Error ? error.message : "Failed to generate content. Please check your API settings."}`,
+            timestamp: new Date()
+        };
+        setMessages(prev => [...prev, errorMsg]);
     } finally {
-      setIsGenerating(false);
+        setIsGenerating(false);
     }
   };
-
-  const handleUpdateCreation = (id: string, newHtml: string) => {
-    setHistory(prev => prev.map(item => 
-        item.id === id ? { ...item, html: newHtml } : item
-    ));
-    if (activeCreation && activeCreation.id === id) {
-        setActiveCreation(prev => prev ? { ...prev, html: newHtml } : null);
-    }
-  };
-
-  const handleReset = () => {
-    setActiveCreation(null);
-    setIsGenerating(false);
-  };
-
-  const handleSelectCreation = (creation: Creation) => {
-    setActiveCreation(creation);
-  };
-
-  const handleImportClick = () => {
-    importInputRef.current?.click();
-  };
-
-  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-        try {
-            const json = event.target?.result as string;
-            const parsed = JSON.parse(json);
-            
-            // Basic validation
-            if (parsed.html && parsed.name) {
-                const importedCreation: Creation = {
-                    ...parsed,
-                    timestamp: new Date(parsed.timestamp || Date.now()),
-                    id: parsed.id || crypto.randomUUID()
-                };
-                
-                // Add to history if not already there (by ID check)
-                setHistory(prev => {
-                    const exists = prev.some(c => c.id === importedCreation.id);
-                    return exists ? prev : [importedCreation, ...prev];
-                });
-
-                // Set as active immediately
-                setActiveCreation(importedCreation);
-            } else {
-                alert("Invalid creation file format.");
-            }
-        } catch (err) {
-            console.error("Import error", err);
-            alert("Failed to import creation.");
-        }
-        if (importInputRef.current) importInputRef.current.value = '';
-    };
-    reader.readAsText(file);
-  };
-
-  const isFocused = !!activeCreation || isGenerating;
 
   return (
-    <div className="h-[100dvh] overflow-y-auto overflow-x-hidden relative flex flex-col">
-      
-      {/* Centered Content Container */}
-      <div 
-        className={`
-          min-h-full flex flex-col w-full max-w-7xl mx-auto px-4 sm:px-6 relative z-10 
-          transition-all duration-700 cubic-bezier(0.4, 0, 0.2, 1)
-          ${isFocused 
-            ? 'opacity-0 scale-95 blur-sm pointer-events-none h-[100dvh] overflow-hidden' 
-            : 'opacity-100 scale-100 blur-0'
-          }
-        `}
-      >
-        {/* Main Vertical Centering Wrapper */}
-        <div className="flex-1 flex flex-col justify-center items-center w-full py-12 md:py-20">
-          
-          {/* 1. Hero Section */}
-          <div className="w-full mb-8 md:mb-16">
-              <Hero />
-          </div>
-
-          {/* 2. Input Section */}
-          <div className="w-full flex justify-center mb-8">
-              <InputArea onGenerate={handleGenerate} isGenerating={isGenerating} disabled={isFocused} />
-          </div>
-
-        </div>
-        
-        {/* 3. History Section & Footer - Stays at bottom */}
-        <div className="flex-shrink-0 pb-6 w-full mt-auto flex flex-col items-center gap-6">
-            <div className="w-full px-2 md:px-0">
-                <CreationHistory history={history} onSelect={handleSelectCreation} />
-            </div>
-            
-            <a 
-              href="https://x.com/ammaar" 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="text-zinc-600 hover:text-zinc-400 text-xs font-mono transition-colors pb-2"
-            >
-              Created by @ammaar
-            </a>
-        </div>
-      </div>
-
-      {/* Live Preview - Always mounted for smooth transition */}
-      <LivePreview
-        creation={activeCreation}
-        isLoading={isGenerating}
-        isFocused={isFocused}
-        onReset={handleReset}
-        onUpdate={handleUpdateCreation}
+    <div className="h-[100dvh] w-full bg-[#000000] overflow-hidden flex flex-col font-sans">
+      <SettingsModal 
+        isOpen={isSettingsOpen} 
+        onClose={() => setIsSettingsOpen(false)} 
+        settings={settings}
+        onSave={handleSaveSettings}
       />
 
-      {/* Subtle Import Button (Bottom Right) */}
-      <div className="fixed bottom-4 right-4 z-50">
-        <button 
-            onClick={handleImportClick}
-            className="flex items-center space-x-2 p-2 text-zinc-500 hover:text-zinc-300 transition-colors opacity-60 hover:opacity-100"
-            title="Import Artifact"
-        >
-            <span className="text-xs font-medium uppercase tracking-wider hidden sm:inline">Upload previous artifact</span>
-            <ArrowUpTrayIcon className="w-5 h-5" />
-        </button>
-        <input 
-            type="file" 
-            ref={importInputRef} 
-            onChange={handleImportFile} 
-            accept=".json" 
-            className="hidden" 
-        />
-      </div>
+      <PanelGroup direction="horizontal">
+        
+        {/* Left Panel: Chat Interface */}
+        <Panel defaultSize={40} minSize={25} maxSize={60} className="flex flex-col">
+            <ChatInterface 
+                messages={messages}
+                artifacts={artifacts}
+                onSendMessage={handleSendMessage}
+                onArtifactClick={setActiveArtifactId}
+                onOpenSettings={() => setIsSettingsOpen(true)}
+                isGenerating={isGenerating}
+                activeArtifactId={activeArtifactId}
+            />
+        </Panel>
+
+        <PanelResizeHandle className="w-1.5 bg-[#18181b] hover:bg-blue-600 transition-colors flex items-center justify-center group cursor-col-resize">
+            <div className="h-8 w-1 bg-zinc-600 rounded-full group-hover:bg-white/80"></div>
+        </PanelResizeHandle>
+
+        {/* Right Panel: Live Preview */}
+        <Panel className="flex flex-col bg-[#0c0c0e]">
+            <LivePreview 
+                creation={activeArtifactId ? artifacts[activeArtifactId] : null}
+                isLoading={isGenerating && !activeArtifactId} // Only show full loader if no artifact yet
+                isFocused={true}
+                onReset={() => setActiveArtifactId(null)}
+                onUpdate={(id, html) => {
+                     setArtifacts(prev => ({ ...prev, [id]: { ...prev[id], html } }));
+                }}
+                embedded={true}
+            />
+        </Panel>
+
+      </PanelGroup>
     </div>
   );
 }

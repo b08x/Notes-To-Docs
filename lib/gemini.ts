@@ -2,143 +2,142 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+'use server';
 
-// Using gemini-3-pro-preview for complex reasoning tasks.
-const GEMINI_MODEL = 'gemini-3-pro-preview';
+import { generateText } from "ai";
+import { AIRegistry } from "./ai/registry";
+import { UserSettings } from "./types/settings";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const SYSTEM_INSTRUCTION = `
+<system_instructions>
+  <role>
+    You are an Expert Knowledge Manager and Senior Technical Writer for an Enterprise IT organization.
+    Your goal is to transform raw technical inputs (logs, messy notes, screenshots, diagrams, PDFs) into authoritative, strictly structured ServiceNow Knowledge Base (KB) Articles.
+  </role>
 
-const SYSTEM_INSTRUCTION = `You are an expert Technical Writer and Knowledge Management Specialist.
-Your goal is to transform raw input (rough notes, screenshots, support tickets, diagrams, or disorganized text) into a polished, standardized **ServiceNow Knowledge Base (KB) Article**.
+  <directives>
+    1. **Analyze Input Nodes**: Scan all provided context (text, images, PDF content) to understand the technical scenario.
+    2. **Identify Root Cause**: Determine the underlying issue and the resolution logic.
+    3. **Map Solution Steps**: Structure the solution into clear, linear, reproducible phases.
+    4. **Generate Structured Output**: Produce the final HTML artifact following the strict template.
+  </directives>
 
-You must strictly follow the "Template Specification" below.
+  <style_guide>
+    - Tone: Professional, authoritative, direct (Active Voice).
+    - Formatting: ServiceNow HTML standards (Arial font).
+    - Visuals: Use styled <div> placeholders for missing images: <div class="screenshot-placeholder">[FIGURE: Description]</div>.
+    - Warnings: Highlight critical risks in red or bold.
+  </style_guide>
 
-### TEMPLATE SPECIFICATION & STYLE GUIDE
-
-#### 1. Document Structure (HTML Output)
-The output must be a clean, single-page HTML document styled to look like a professional document (Arial font).
-
-**A. Document Metadata (Header)**
-- **KB Number:** [KBXXXXXXX] (Generate a placeholder if unknown)
-- **Version:** [vX.0]
-- **Title:** [Descriptive Title of Issue/Device] (Heading 1)
-
-**B. Introduction Section**
-- **Heading:** **Introduction** (Heading 2)
-- **Purpose:** A single sentence defining the goal.
-- **Scope/Disclaimer:** Define coverage (Hardware vs. Software).
-- **Critical Triage Check:** Use a bold or alert-styled box. List conditions to STOP and contact Field Service.
-
-**C. Instruction Block (The "Repeater" - Repeat for every major phase)**
-- **Phase Header:** **Step [X]: [Phase Name]** (Heading 2)
-- **Task Header:** **[Number]. [Task Name]** (Heading 3)
-- **Action List:**
-    - Use standard <ul>/<li> bullets.
-    - **UI Elements:** Use <strong> tags (e.g., <strong>Device Manager</strong>).
-    - **Keyboard Shortcuts:** Use <code> or monospace (e.g., Win + X).
-- **Image Placement:**
-    - Since you cannot generate real images, insert a styled placeholder immediately following the step it depicts.
-    - Format: <div class="screenshot-placeholder">[FIGURE: Description of what should be here]</div>
-- **Nested Logic:** Use nested lists for verification steps.
-
-### OUTPUT REQUIREMENTS:
-1. **Format**: Return ONLY the raw HTML code. Start immediately with <!DOCTYPE html>.
-2. **Styling**: Include a <style> block in the <head> to enforce:
-    - Font: Arial, sans-serif.
-    - Headers: Bold, clear hierarchy.
-    - UI Elements: Bold.
-    - Variables: Monospace.
-    - Warnings: Red text or red border.
-    - Placeholder Images: Light gray background, dashed border, centered text, padding.
-3. **Content Processing**:
-    - Abstract the "messy" input into clear, professional steps.
-    - If the input is an image of text, transcribe and format it.
-    - If the input describes a process, structure it.
+  <template_specification>
+    The output must be a single HTML file containing:
+    - **Header**: KB Number, Version, Title (H1).
+    - **Introduction**: (H2) Purpose, Scope.
+    - **Triage/Prerequisites**: (Alert Box) Conditions to stop/escalate.
+    - **Resolution**: (Repeater) Phase X (H2) -> Step Y (H3) -> Action items (ul/li).
+  </template_specification>
+</system_instructions>
 `;
 
 const UPDATE_SYSTEM_INSTRUCTION = `You are an expert Technical Editor.
 Your goal is to modify existing Knowledge Base Article HTML code based on user instructions.
 
 CORE DIRECTIVES:
-1. **Analyze the Request**: Understand what the user wants to change (e.g., "fix the typo in step 2", "make the warning red", "add a step for rebooting").
-2. **Modify the Code**: Return the FULLY UPDATED HTML code. Do not return diffs or partial snippets.
+1. **Analyze the Request**: Understand what the user wants to change.
+2. **Modify the Code**: Return the FULLY UPDATED HTML code.
 3. **Preserve Format**: Maintain the ServiceNow/KB styling and structure.
 4. **No External Images**: Continue to use styled placeholders for images.
 
 RESPONSE FORMAT:
 Return ONLY the raw HTML code. Start immediately with <!DOCTYPE html>.`;
 
-export async function bringToLife(prompt: string, fileBase64?: string, mimeType?: string): Promise<string> {
-  const parts: any[] = [];
+interface FileInput {
+  name: string;
+  type: string;
+  base64: string;
+}
+
+export async function generateKB(
+  prompt: string, 
+  files: FileInput[] = [], 
+  extractedTextContext: string = "",
+  settings: UserSettings
+): Promise<string> {
   
-  const finalPrompt = fileBase64 
-    ? "Analyze this input (image/document) containing notes, screenshots, or procedures. Transform it into a structured ServiceNow KB Article following the mandated template." 
-    : prompt || "Create a template KB article for a standard troubleshooting procedure.";
-
-  parts.push({ text: finalPrompt });
-
-  if (fileBase64 && mimeType) {
-    parts.push({
-      inlineData: {
-        data: fileBase64,
-        mimeType: mimeType,
-      },
-    });
-  }
-
   try {
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: {
-        parts: parts
-      },
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        temperature: 0.3, // Lower temperature for structured documentation
-        thinkingConfig: { thinkingBudget: 32768 }
-      },
+    const model = AIRegistry.getModel(settings);
+    
+    // Construct User Content for Vercel AI SDK
+    const content: any[] = [
+      { type: 'text', text: `<context_data>
+    <user_request>${prompt || "Generate a standard troubleshooting article."}</user_request>
+    ${extractedTextContext ? `<extracted_text_content>${extractedTextContext}</extracted_text_content>` : ''}
+    <file_manifest>
+      ${files.map(f => `<file name="${f.name}" type="${f.type}" />`).join('\n')}
+    </file_manifest>
+  </context_data>` }
+    ];
+
+    // Add Images
+    for (const file of files) {
+      if (file.type.startsWith('image/')) {
+        content.push({
+          type: 'image',
+          image: file.base64, // Vercel AI SDK supports base64 strings directly in some adapters, or we can use data URIs
+          mimeType: file.type
+        });
+      }
+      // Note: PDF files are handled via extractedTextContext for now in this unified flow,
+      // as not all providers support PDF inputs natively yet via unified SDK.
+    }
+
+    const { text } = await generateText({
+      model: model,
+      system: SYSTEM_INSTRUCTION,
+      messages: [
+        {
+          role: 'user',
+          content: content
+        }
+      ],
+      temperature: 0.2,
+      maxTokens: 4000, 
     });
 
-    let text = response.text || "<!-- Failed to generate content -->";
-    text = text.replace(/^```html\s*/, '').replace(/^```\s*/, '').replace(/```$/, '');
+    let cleanedText = text || "<!-- Failed to generate content -->";
+    cleanedText = cleanedText.replace(/^```html\s*/, '').replace(/^```\s*/, '').replace(/```$/, '');
 
-    return text;
+    return cleanedText;
+
   } catch (error) {
-    console.error("Gemini Generation Error:", error);
-    throw error;
+    console.error("AI Generation Error:", error);
+    throw new Error(`Generation failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-export async function updateApp(currentHtml: string, instructions: string): Promise<string> {
-  const parts: any[] = [];
-
-  const prompt = `
-  USER INSTRUCTIONS: ${instructions}
-
-  CURRENT KB ARTICLE HTML:
-  ${currentHtml}
-  `;
-
-  parts.push({ text: prompt });
-
+export async function updateApp(currentHtml: string, instructions: string, settings: UserSettings): Promise<string> {
   try {
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: {
-        parts: parts
-      },
-      config: {
-        systemInstruction: UPDATE_SYSTEM_INSTRUCTION,
-        thinkingConfig: { thinkingBudget: 32768 }
-      },
+    const model = AIRegistry.getModel(settings);
+
+    const prompt = `
+    USER INSTRUCTIONS: ${instructions}
+  
+    CURRENT KB ARTICLE HTML:
+    ${currentHtml}
+    `;
+
+    const { text } = await generateText({
+        model: model,
+        system: UPDATE_SYSTEM_INSTRUCTION,
+        messages: [{ role: 'user', content: prompt }],
     });
 
-    let text = response.text || "<!-- Failed to update content -->";
-    text = text.replace(/^```html\s*/, '').replace(/^```\s*/, '').replace(/```$/, '');
-    return text;
+    let cleanedText = text || "<!-- Failed to update content -->";
+    cleanedText = cleanedText.replace(/^```html\s*/, '').replace(/^```\s*/, '').replace(/```$/, '');
+    return cleanedText;
+
   } catch (error) {
-    console.error("Gemini Update Error:", error);
+    console.error("AI Update Error:", error);
     throw error;
   }
 }

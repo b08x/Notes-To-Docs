@@ -1,22 +1,13 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
-*/
 import React from 'react';
-import ReactDOM from 'react-dom/client';
-import RootLayout from './app/layout';
+import { createRoot } from 'react-dom/client';
 import Page from './app/page';
+import './app/globals.css';
 
-const rootElement = document.getElementById('root');
-if (!rootElement) {
-  throw new Error("Could not find root element to mount to");
-}
+const container = document.getElementById('root');
+const root = createRoot(container!);
 
-const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <RootLayout>
-      <Page />
-    </RootLayout>
+    <Page />
   </React.StrictMode>
 );
